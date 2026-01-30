@@ -1,0 +1,177 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+
+--// 1. INIT ANTI-BAN (GIỮ NGUYÊN)
+local function InitAntiBan()
+    local mt = getrawmetatable(game)
+    local old = mt.__namecall
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        if method == "FireServer" and self.Name == "MainEvent" and table.find({"CHECK", "One", "TeleportDetect", "Kick"}, args[1]) then
+            return
+        end
+        return old(self, ...)
+    end)
+    setreadonly(mt, true)
+end
+InitAntiBan()
+
+--// 2. FIX LAG LOOP (30s)
+task.spawn(function()
+    while true do
+        pcall(function()
+            local args = {{}, false, "en-gb", "Mobile", Vector2.new(1600, 900), false, 1}
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+            if remotes and remotes:FindFirstChild("OnEventServiceUpdate") then
+                 remotes.OnEventServiceUpdate:FireServer(unpack(args))
+            end
+        end)
+        task.wait(30)
+    end
+end)
+
+--------------------------------------------------------------
+-- CẤU HÌNH & CHỨC NĂNG CHIẾN ĐẤU
+--------------------------------------------------------------
+local Config = {
+    TweenSpeed = 325,       -- Tốc độ bay
+    Height = 5,             -- Cao hơn địch 5 stud
+    DistanceBack = 2,       -- Ở sau lưng địch 2 stud
+    SpamDelay = 0.1         -- Tốc độ spam chiêu
+}
+
+-- Kiểm tra mục tiêu hợp lệ (Không SafeZone, Không Khiên, Còn sống)
+local function IsValidTarget(Plr)
+    if Plr and Plr ~= LocalPlayer and Plr.Character and Plr.Character:FindFirstChild("HumanoidRootPart") and Plr.Character:FindFirstChild("Humanoid") then
+        local Char = Plr.Character
+        -- Kiểm tra máu
+        if Char.Humanoid.Health <= 0 then return false end
+        -- Kiểm tra ForceField (Vùng an toàn/Mới hồi sinh)
+        if Char:FindFirstChildWhichIsA("ForceField") then return false end
+        -- Kiểm tra SafeZone (Nếu game dùng Attribute)
+        if Char:GetAttribute("SafeZone") then return false end
+        return true
+    end
+    return false
+end
+
+local function GetClosestPlayer()
+    local closest = nil
+    local maxDist = math.huge
+    
+    for _, v in pairs(Players:GetPlayers()) do
+        if IsValidTarget(v) then
+            local dist = (LocalPlayer.Character.HumanoidRootPart.Position - v.Character.HumanoidRootPart.Position).Magnitude
+            if dist < maxDist then
+                maxDist = dist
+                closest = v
+            end
+        end
+    end
+    return closest
+end
+
+--// ANTI-GRAVITY & BODYCLIP (CHỐNG RỚT & XUYÊN TƯỜNG)
+task.spawn(function()
+    RunService.Stepped:Connect(function()
+        pcall(function()
+            if LocalPlayer.Character then
+                local HRP = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local Hum = LocalPlayer.Character:FindFirstChild("Humanoid")
+                
+                -- Noclip (Xuyên tường)
+                for _, v in pairs(LocalPlayer.Character:GetChildren()) do
+                    if v:IsA("BasePart") then v.CanCollide = false end
+                end
+                
+                -- BodyVelocity (Chống rớt)
+                if HRP then
+                    -- Tạo BodyVelocity nếu chưa có để giữ nhân vật lơ lửng
+                    if not HRP:FindFirstChild("AntiFallBV") then
+                        local bv = Instance.new("BodyVelocity")
+                        bv.Name = "AntiFallBV"
+                        bv.Parent = HRP
+                        bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+                        bv.Velocity = Vector3.zero 
+                    else
+                        -- Reset velocity để không bị kéo xuống
+                        HRP.AntiFallBV.Velocity = Vector3.new(0,0,0) 
+                    end
+                end
+                
+                -- Đổi trạng thái Humanoid để mượt hơn
+                if Hum then
+                    Hum:ChangeState(Enum.HumanoidStateType.Physics)
+                end
+            end
+        end)
+    end)
+end)
+
+--// AUTO SKILL & WEAPON (TỰ ĐỔI SÚNG & SPAM CHIÊU)
+task.spawn(function()
+    while task.wait(Config.SpamDelay) do
+        pcall(function()
+            local Target = GetClosestPlayer()
+            if Target then
+                -- 1. Trang bị súng (Loop qua Inventory)
+                local Backpack = LocalPlayer.Backpack:GetChildren()
+                for _, tool in pairs(Backpack) do
+                    if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
+                         LocalPlayer.Character.Humanoid:EquipTool(tool)
+                    end
+                end
+                
+                -- 2. Spam Skills (Z, X, C, V)
+                local keys = {"Z", "X", "C", "V"}
+                for _, key in ipairs(keys) do
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[key], false, game)
+                    task.wait(0.05)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[key], false, game)
+                end
+            end
+        end)
+    end
+end)
+
+--// MAIN LOOP: MOVEMENT (BAY)
+task.spawn(function()
+    while task.wait() do
+        pcall(function()
+            local Target = GetClosestPlayer()
+            if Target and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                local Root = LocalPlayer.Character.HumanoidRootPart
+                local EnemyRoot = Target.Character.HumanoidRootPart
+                
+                -- Tính toán vị trí: Sau lưng 2 stud, Trên đầu 5 stud
+                -- CFrame.new(0, 5, 2) -> Y=5 (Lên), Z=2 (Lùi về sau theo hướng nhìn của địch)
+                local TargetCFrame = EnemyRoot.CFrame * CFrame.new(0, Config.Height, Config.DistanceBack)
+                
+                -- Nhìn về phía kẻ địch
+                local FinalCFrame = CFrame.new(TargetCFrame.Position, EnemyRoot.Position)
+                
+                -- Tính tốc độ Tween
+                local Distance = (Root.Position - FinalCFrame.Position).Magnitude
+                local Time = Distance / Config.TweenSpeed
+                
+                -- Nếu quá gần thì set luôn CFrame để tránh giật lag
+                if Distance < 10 then
+                    Time = 0.05 
+                end
+
+                local TInfo = TweenInfo.new(Time, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+                local Tween = TweenService:Create(Root, TInfo, {CFrame = FinalCFrame})
+                Tween:Play()
+            else
+                -- Nếu không có mục tiêu, xóa BodyVelocity để di chuyển bình thường (nếu muốn)
+                -- Hoặc giữ nguyên để treo máy. Ở đây ta giữ nguyên để an toàn.
+            end
+        end)
+    end
+end)
